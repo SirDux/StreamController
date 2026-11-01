@@ -39,6 +39,7 @@ from src.backend.DeckManagement.HelperMethods import *
 from src.backend.DeckManagement.ImageHelpers import *
 from src.backend.DeckManagement.InputIdentifier import Input, InputEvent, InputIdentifier
 from src.backend.DeckManagement.Subclasses.ActionPermissionManager import ActionPermissionManager
+from src.backend.DeckManagement.Subclasses.DoublePressDetector import DoublePressDetector
 from src.backend.DeckManagement.Subclasses.FakeDeck import FakeDeck
 from src.backend.DeckManagement.Subclasses.KeyImage import InputImage
 from src.backend.DeckManagement.Subclasses.KeyLabel import KeyLabel
@@ -762,6 +763,7 @@ class DeckController:
             return
         
         self.hold_time: float = gl.settings_manager.get_app_settings().get("general", {}).get("hold-time", 0.5)
+        self.double_press_time: float = gl.settings_manager.get_app_settings().get("general", {}).get("double-press-time", 0.3)
         
         self.own_deck_stack_child: "DeckStackChild" = None
         self.own_key_grid: "KeyGridChild" = None
@@ -1354,6 +1356,11 @@ class DeckController:
         # self.active_page = None
 
         self.active_page = page
+
+        # A press on the old page must not pair up with one on the new page as a double press
+        for inputs in self.inputs.values():
+            for controller_input in inputs:
+                controller_input.double_press.cancel()
 
         if page is None:
             # Clear deck
@@ -2823,6 +2830,7 @@ class ControllerInput:
         self.state = 0
         self.hide_error_timer: Timer = None
         self.hold_start_timer: Timer = None
+        self.double_press = DoublePressDetector(lambda: self.deck_controller.double_press_time)
         self.ControllerStateClass = state_class
         self.identifier: InputIdentifier = identifier
         self.media_ticks: int = 0
@@ -2888,6 +2896,31 @@ class ControllerInput:
         
         self.hold_start_timer.cancel()
         self.hold_start_timer = None
+
+    def has_double_press_action(self, state: "ControllerInputState", event: InputEvent) -> bool:
+        for action in state.get_own_actions():
+            if isinstance(action, ActionCore) and action.event_manager.get_event_assigner_for_event(event) is not None:
+                return True
+        return False
+
+    def release_with_double_press(self, state: "ControllerInputState", held: bool,
+                                  short_up_event: InputEvent, hold_stop_event: InputEvent,
+                                  double_press_event: InputEvent) -> None:
+        """Sends the short-up/hold-stop of a release, holding short-ups back while a double press is possible."""
+        page = self.deck_controller.get_page_for_input(self.identifier)
+
+        def emit_short_up():
+            # The window can outlast a page switch - don't fire into the new page
+            if self.deck_controller.get_page_for_input(self.identifier) is not page:
+                return
+            state.own_actions_event_callback_threaded(event=short_up_event)
+
+        self.double_press.on_release(
+            held=held,
+            double_press_bound=self.has_double_press_action(state, double_press_event),
+            emit_short_up=emit_short_up,
+            emit_hold_stop=lambda: state.own_actions_event_callback_threaded(event=hold_stop_event),
+        )
 
     def create_n_states(self, n: int):
         if not self.enable_states:
@@ -3259,21 +3292,26 @@ class ControllerKey(ControllerInput):
         active_state = self.get_active_state()
         if press_state: # Key down
             self.down_start_time = time.time()
-            self.start_hold_timer()
+            is_double_press = self.double_press.on_down()
+            if not is_double_press:
+                self.start_hold_timer()
             active_state.own_actions_event_callback_threaded(
                 event=Input.Key.Events.DOWN,
                 show_notifications=True
             )
+            if is_double_press:
+                active_state.own_actions_event_callback_threaded(
+                    event=Input.Key.Events.DOUBLE_PRESS
+                )
 
         elif self.down_start_time is not None: # Key up
-            if time.time() - self.down_start_time >= self.deck_controller.hold_time:
-                active_state.own_actions_event_callback_threaded(
-                    event=Input.Key.Events.HOLD_STOP
-                )
-            else:
-                active_state.own_actions_event_callback_threaded(
-                    event=Input.Key.Events.SHORT_UP
-                )
+            self.release_with_double_press(
+                state=active_state,
+                held=time.time() - self.down_start_time >= self.deck_controller.hold_time,
+                short_up_event=Input.Key.Events.SHORT_UP,
+                hold_stop_event=Input.Key.Events.HOLD_STOP,
+                double_press_event=Input.Key.Events.DOUBLE_PRESS,
+            )
             self.down_start_time = None
             self.stop_hold_timer()
             active_state.own_actions_event_callback_threaded(
@@ -3813,21 +3851,26 @@ class ControllerDial(ControllerInput):
         if event_type == DialEventType.PUSH:
             if value:
                 self.down_start_time = time.time()
-                self.start_hold_timer()
+                is_double_press = self.double_press.on_down()
+                if not is_double_press:
+                    self.start_hold_timer()
                 active_state.own_actions_event_callback_threaded(
                     event=Input.Dial.Events.DOWN,
                     show_notifications=True
                 )
+                if is_double_press:
+                    active_state.own_actions_event_callback_threaded(
+                        event=Input.Dial.Events.DOUBLE_PRESS
+                    )
             elif self.down_start_time is not None:
                 self.stop_hold_timer()
-                if time.time() >= self.down_start_time + self.deck_controller.hold_time:
-                    active_state.own_actions_event_callback_threaded(
-                        event=Input.Dial.Events.HOLD_STOP
-                    )
-                else:
-                    active_state.own_actions_event_callback_threaded(
-                        event=Input.Dial.Events.SHORT_UP
-                    )
+                self.release_with_double_press(
+                    state=active_state,
+                    held=time.time() >= self.down_start_time + self.deck_controller.hold_time,
+                    short_up_event=Input.Dial.Events.SHORT_UP,
+                    hold_stop_event=Input.Dial.Events.HOLD_STOP,
+                    double_press_event=Input.Dial.Events.DOUBLE_PRESS,
+                )
                 self.down_start_time = None
                 active_state.own_actions_event_callback_threaded(
                     event=Input.Dial.Events.UP
@@ -4253,21 +4296,26 @@ class ControllerTouchKey(ControllerInput):
         active_state = self.get_active_state()
         if state:
             self.down_start_time = time.time()
-            self.start_hold_timer()
+            is_double_press = self.double_press.on_down()
+            if not is_double_press:
+                self.start_hold_timer()
             active_state.own_actions_event_callback_threaded(
                 event=Input.TouchKey.Events.DOWN,
                 show_notifications=True
             )
+            if is_double_press:
+                active_state.own_actions_event_callback_threaded(
+                    event=Input.TouchKey.Events.DOUBLE_PRESS
+                )
         elif self.down_start_time is not None:
             self.stop_hold_timer()
-            if time.time() >= self.down_start_time + self.deck_controller.hold_time:
-                active_state.own_actions_event_callback_threaded(
-                    event=Input.TouchKey.Events.HOLD_STOP
-                )
-            else:
-                active_state.own_actions_event_callback_threaded(
-                    event=Input.TouchKey.Events.SHORT_UP
-                )
+            self.release_with_double_press(
+                state=active_state,
+                held=time.time() >= self.down_start_time + self.deck_controller.hold_time,
+                short_up_event=Input.TouchKey.Events.SHORT_UP,
+                hold_stop_event=Input.TouchKey.Events.HOLD_STOP,
+                double_press_event=Input.TouchKey.Events.DOUBLE_PRESS,
+            )
             self.down_start_time = None
             active_state.own_actions_event_callback_threaded(
                 event=Input.TouchKey.Events.UP

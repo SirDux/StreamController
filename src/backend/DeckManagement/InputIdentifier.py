@@ -55,6 +55,7 @@ class Input:
             SHORT_UP = "Key Short Up"
             HOLD_START = "Key Hold Start"
             HOLD_STOP = "Key Hold Stop"
+            DOUBLE_PRESS = "Key Double Press"
 
         def __init__(self, json_identifier: str):
             self.coords = Input.Key.Coords_From_PageCoords(json_identifier)
@@ -101,6 +102,7 @@ class Input:
             SHORT_UP = "Dial Short Up"
             HOLD_START = "Dial Hold Start"
             HOLD_STOP = "Dial Hold Stop"
+            DOUBLE_PRESS = "Dial Double Press"
             TURN_CW = "Dial Turn CW"
             TURN_CCW = "Dial Turn CCW"
             SHORT_TOUCH_PRESS = "Dial Touchscreen Short Press"

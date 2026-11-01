@@ -385,6 +385,12 @@ class GeneralPageGroup(Adw.PreferencesGroup):
         self.hold_time_row.set_range(0.1, 3)
         self.add(self.hold_time_row)
 
+        self.double_press_time_row = Adw.SpinRow.new_with_range(min=0.1, max=1, step=0.05)
+        self.double_press_time_row.set_title("Double press window (s)")
+        self.double_press_time_row.set_subtitle("Maximum time between two presses to count as a double press")
+        self.double_press_time_row.set_digits(2)
+        self.add(self.double_press_time_row)
+
         self.rolling_labels = Adw.SwitchRow(title="Rolling labels", subtitle="Enable automatic rolling/scrolling of too long labels")
         self.add(self.rolling_labels)
 
@@ -398,12 +404,14 @@ class GeneralPageGroup(Adw.PreferencesGroup):
 
         # Connect signals
         self.hold_time_row.connect("changed", self.on_n_fake_decks_row_changed)
+        self.double_press_time_row.connect("changed", self.on_double_press_time_changed)
         self.rolling_labels.connect("notify::active", self.on_rolling_labels_changed)
         self.persistent_states.connect("notify::active", self.on_persistent_states_changed)
         self.shrink_background.connect("notify::active", self.on_shrink_background_changed)
 
     def load_defaults(self):
         self.hold_time_row.set_value(self.settings.settings_json.get("general", {}).get("hold-time", 0.5))
+        self.double_press_time_row.set_value(self.settings.settings_json.get("general", {}).get("double-press-time", 0.3))
         self.rolling_labels.set_active(self.settings.settings_json.get("general", {}).get("rolling-labels", True))
         self.persistent_states.set_active(self.settings.settings_json.get("general", {}).get("persistent-states", False))
         self.shrink_background.set_active(self.settings.settings_json.get("general", {}).get("shrink-background-on-press", True))
@@ -420,6 +428,15 @@ class GeneralPageGroup(Adw.PreferencesGroup):
 
         # Reload decks
         gl.deck_manager.load_fake_decks()
+
+    def on_double_press_time_changed(self, *args):
+        self.settings.settings_json.setdefault("general", {})
+        self.settings.settings_json["general"]["double-press-time"] = self.double_press_time_row.get_value()
+
+        for controller in gl.deck_manager.deck_controller:
+            controller.double_press_time = self.double_press_time_row.get_value()
+
+        self.settings.save_json()
 
     def on_rolling_labels_changed(self, *args):
         self.settings.settings_json.setdefault("general", {})
